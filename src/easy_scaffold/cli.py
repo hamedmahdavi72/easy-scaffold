@@ -5,23 +5,18 @@ import sys
 from pathlib import Path
 
 import hydra
-from dotenv import load_dotenv
-from hydra.core.config_store import ConfigStore
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from easy_scaffold.app import App
 from easy_scaffold.common.custom_exceptions import ConfigException
+from easy_scaffold.common.env_bootstrap import load_local_dotenv
 
 logger = logging.getLogger(__name__)
 
-# We no longer register the schema with Hydra, as Pydantic handles validation.
-# cs = ConfigStore.instance()
-# cs.store(name="config_schema", node=MainConfig)
-
-# Load environment variables BEFORE Hydra decorator runs (so config resolution can access env vars)
-# Find project root (where .env file should be) - go up from this file to project root
+# Load `.env` before Hydra (override=False: platform-injected env wins). Disable on AWS with
+# EASY_SCAFFOLD_LOAD_DOTENV=0 if you do not want the file read at all.
 project_root = Path(__file__).parent.parent.parent
-load_dotenv(project_root / ".env")
+load_local_dotenv(project_root)
 
 
 @hydra.main(config_path="../../configs", config_name="main", version_base=None)

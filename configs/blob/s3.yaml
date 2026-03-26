@@ -1,0 +1,14 @@
+﻿# @package _global_
+# Example S3 blob store (optional). Enable in main config:
+# defaults:
+#   - blob: s3
+# blob_store:
+#   _target_: easy_scaffold.media.s3_blob_store.S3BlobStore
+#   bucket: ${oc.env:S3_BUCKET}
+#   prefix: easy-scaffold/
+#   region_name: ${oc.env:AWS_REGION,null}
+
+_target_: easy_scaffold.media.s3_blob_store.S3BlobStore
+bucket: ${oc.env:S3_BUCKET}
+prefix: ""
+region_name: null

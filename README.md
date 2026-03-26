@@ -16,6 +16,7 @@ A minimal and hackable codebase for implementing agentic scaffolds with LLMs. Th
 
 ## Quick Links
 
+- **Current version:** **0.2.0** (see [CHANGELOG.md](CHANGELOG.md) for history)
 - **Installation** - See [Installation](#installation) below
 - **Tutorials** - [Adding a New Stage](tutorials/add_new_stage_tutorial.md) | [Adding a New Workflow](tutorials/add_new_workflow_tutorial.md)
 - **Example Workflows** - [Agentic Grader](#example-implementations) | [IMO 2025 Agent](#example-implementations)
@@ -87,7 +88,7 @@ binding:
 
 ### Multi Provider LLM Support
 
-The framework wraps LiteLLM, giving you a unified interface to Gemini, GPT-5, DeepSeek, vLLM, and other providers. Model profiles are defined once in YAML with API keys, temperature settings, token limits, and provider-specific features like reasoning effort or thinking budgets. Stages reference these profiles by name, so switching models is as simple as changing a string in your stage config.
+The framework routes chat completions through a small provider layer: `google-genai` for Gemini, the official `anthropic` SDK for Claude (`provider: anthropic`), the OpenAI Python SDK for OpenAI and OpenAI-compatible APIs (e.g. DeepSeek), and the same SDK for vLLM and completion-style calls. Set `ANTHROPIC_API_KEY` (and optionally `ANTHROPIC_BASE_URL` or `api_base` in YAML) for Anthropic. Model profiles are defined once in YAML with API keys, temperature settings, token limits, and provider-specific features like reasoning effort or thinking budgets. Stages reference these profiles by name, so switching models is as simple as changing a string in your stage config.
 
 ```yaml
 # configs/llm/default.yaml
@@ -103,7 +104,16 @@ models:
     provider: "openai"
     model: "openai/gpt-5.2"
     reasoning_effort: "high"
+  claude_sonnet:
+    provider: "anthropic"
+    model: "claude-sonnet-4-20250514"
 ```
+
+### Images, vision, and image generation
+
+Stages can attach images from blob storage with `media_attachments` (paths resolved via your configured `blob_store`). Messages are built with OpenAI-style `image_url` parts (data URLs); Gemini and Anthropic map those to native vision inputs. For OpenAI, if the prompt includes images and you use a structured Pydantic output, the client uses `chat.completions.create` and the stage parses JSON from the reply.
+
+For **image generation**, set the model profile `task: image_generation` (OpenAI provider only), configure `blob_store` in Hydra, and set the stage `output_key` to the context key that should receive an `ImageRef` document (`key`, `content_type`, etc.). Install `boto3` with the optional extra: `pip install ".[s3]"` when using the S3 blob store.
 
 ### Comprehensive Logging
 
@@ -154,6 +164,13 @@ MONGO_CONNECTION_STRING=your_connection_string
 DB_NAME=AoPS
 ```
 
+### AWS and Secrets Manager (recommended)
+
+On AWS, **do not rely on a `.env` file in the image**. Map [Secrets Manager](https://docs.aws.amazon.com/secretsmanager/) (or SSM Parameter Store) to **process environment variables** in your task or function definition (ECS task definition, Lambda configuration, App Runner, etc.). Use the **same variable names** as in your Hydra YAML (e.g. `OPENAI_API_KEY`, `MONGO_CONNECTION_STRING`). The CLI loads a local `.env` with `override=False`, so any value your platform already set is **never** overwritten by the file.
+
+Optionally set **`EASY_SCAFFOLD_LOAD_DOTENV=0`** in production so the app never attempts to open `.env` (useful if you want to avoid any file-based loading).
+
+
 ## Architecture Overview
 
 ![Architecture Diagram](diagram.png)
@@ -172,7 +189,7 @@ easy-scaffold/
 │       │   ├── configurable_stage.py  # Stage execution engine
 │       │   ├── orchestrator.py        # Workflow orchestration
 │       │   └── binding_resolver.py    # Data binding logic
-│       ├── llm_client/       # LiteLLM wrapper and rate limiting
+│       ├── llm_client/       # Provider router, client, rate limiting
 │       ├── db/                # MongoDB repositories
 │       └── tools/             # Tool calling infrastructure
 └── tutorials/                # Step-by-step guides
@@ -282,7 +299,7 @@ The framework includes infrastructure for LLM tool calling. Define tools as Pyth
 
 ### Structured Outputs
 
-Stages can specify Pydantic response models. The system automatically handles structured output formatting for providers that support it (like Gemini) and falls back gracefully for others.
+Stages can specify Pydantic response models. The system automatically handles structured output formatting for providers that support it (Gemini, Anthropic/Claude, OpenAI-style `parse`, and others) and falls back gracefully where the API does not.
 
 ### Rate Limiting
 
@@ -321,7 +338,7 @@ These implementations showcase how the framework can be used to build evaluation
 
 ## Getting Started
 
-1. **Set up environment variables** for your LLM API keys (`GEMINI_API_KEY`, `OPENAI_API_KEY`, etc.)
+1. **Set up environment variables** for your LLM API keys (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.)
 
 2. **Define model profiles** in `configs/llm/default.yaml` for the providers you want to use
 

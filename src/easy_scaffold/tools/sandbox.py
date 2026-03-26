@@ -17,12 +17,10 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 from dataclasses import dataclass
 
-# resource module is Unix-only, not available on Windows
-try:
+# resource module is Unix-only (not available on Windows)
+HAS_RESOURCE = sys.platform != "win32"
+if HAS_RESOURCE:
     import resource
-    HAS_RESOURCE = True
-except ImportError:
-    HAS_RESOURCE = False
 
 logger = logging.getLogger(__name__)
 

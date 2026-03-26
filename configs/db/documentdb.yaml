@@ -1,0 +1,7 @@
+﻿# /configs/db/documentdb.yaml
+name: "documentdb"
+connection_string: ${oc.env:DOCUMENTDB_CONNECTION_STRING}
+data_db_name: ${oc.env:DB_NAME, "AoPS"}
+logs_db_name: ${oc.env:DB_NAME, "AoPS"}
+data_collection: ${oc.env:COLLECTION_NAME, "AoPS"}
+logs_collection: ${oc.env:LOG_COLLECTION_NAME, "solver_log"}

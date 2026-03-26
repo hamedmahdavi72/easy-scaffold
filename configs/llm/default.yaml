@@ -99,6 +99,13 @@ models:
     api_key: "${oc.env:DEEPSEEK_API_KEY}"
     temperature: 0.5
     max_tokens: 4096
+  # Claude (Anthropic Messages API). Set ANTHROPIC_API_KEY; optional ANTHROPIC_BASE_URL for proxies.
+  claude_sonnet:
+    provider: "anthropic"
+    model: "claude-sonnet-4-20250514"
+    api_key: "${oc.env:ANTHROPIC_API_KEY}"
+    temperature: 0.3
+    max_tokens: 8192
   vllm_local:
     provider: "vllm"
     model: "Qwen/Qwen3-4B-Instruct-2507"
@@ -112,14 +119,6 @@ models:
     extra_params:
       top_p: 0.95
       top_k: 20
-  deepseek_math_v2:
-    provider: "vllm"
-    model: "deepseek/deepseek-math-v2"
-    api_key: "${oc.env:VLLM_API_KEY}"
-    api_base: "${oc.env:VLLM_API_BASE}"
-    temperature: 0.3
-    max_tokens: 32000
-    completion_mode: false
 
 
  

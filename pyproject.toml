@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easy-scaffold"
-version = "0.1.0"
+version = "0.2.0"
 description = "An agentic workflow system for solving Olympiad math problems"
 authors = [
   { name = "Your Name", email = "your.email@example.com" },
@@ -22,18 +22,21 @@ dependencies = [
     "python-dotenv",
     "tenacity",
     "sympy",
-    "litellm",
     "google-genai",
     "jsonref",
     "rich",
     "hydra-colorlog",
     "transformers",
     "openai",
+    "anthropic>=0.45.0",
     "modal",
     "aiohttp",
 ]
 
 [project.optional-dependencies]
+s3 = [
+    "boto3",
+]
 dev = [
     "pytest",
     "pytest-asyncio",

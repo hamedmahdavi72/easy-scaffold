@@ -129,7 +129,7 @@ When you call `stage.execute(context)`:
 └─────────────────────────────────────────────────────────────┘
                         ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ 3. Call LiteLLM Client                                      │
+│ 3. Call LLM client (provider router)                        │
 │    - Handle rate limiting                                   │
 │    - Support completion_mode vs chat completion             │
 │    - Handle tool calling (if tools specified)               │
@@ -164,7 +164,7 @@ solution = context["solution"]
 **What happens under the hood:**
 1. Stage loads template: `"Solve: {problem_statement}"`
 2. Replaces variables: `"Solve: Find all x such that x^2 = 4"`
-3. Calls LLM: `litellm.acompletion(model="gemini-pro", messages=[...])`
+3. Calls LLM: `route_chat_completion` / OpenAI SDK depending on provider
 4. LLM returns: `{"choices": [{"message": {"content": "x = ±2"}}]}`
 5. Stage extracts: `output_data = {"solution": "x = ±2"}`
 6. Context gets updated: `context["solution"] = "x = ±2"`

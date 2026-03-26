@@ -4,42 +4,22 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Type
 
-from rich.pretty import pprint  # type: ignore
-from rich.console import Console  # type: ignore
-from rich.theme import Theme  # type: ignore
-custom = Theme(
-    {
-        "repr.str": "bold yellow",
-        "repr.number": "bright_cyan",
-        "repr.brace": "white",
-        "repr.bool_true": "bold green",
-        "repr.bool_false": "bold red",
-    }
-)
-console = Console(theme=custom)
-
-from litellm import acompletion
-from litellm.exceptions import (
-    APIError,
-    ContentPolicyViolationError,
-    RateLimitError,
-)
+from anthropic import APIStatusError as AnthropicAPIStatusError
 from openai import AsyncOpenAI, OpenAIError
-
-# Try to import InternalServerError if available
-try:
-    from litellm.exceptions import InternalServerError
-except ImportError:
-    InternalServerError = None
 from pydantic import BaseModel
 
+from .providers.errors import (
+    ProviderAPIError,
+    ProviderContentPolicyError,
+    ProviderRateLimitError,
+)
+from .providers.openai_compat import ImageGenerationResult
+from .providers.router import route_chat_completion
+
 # HuggingFace tokenizer for chat templates
-try:
-    from transformers import AutoTokenizer
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
-    AutoTokenizer = None
+from transformers import AutoTokenizer
+
+TRANSFORMERS_AVAILABLE = True
 
 from ..common.custom_exceptions import (
     APIServerException,
@@ -57,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 class LiteLLMClient:
     """
-    Thin wrapper around LiteLLM with project-specific conveniences.
+    LLM client: provider router (Gemini/OpenAI/DeepSeek/Anthropic), OpenAI SDK for vLLM and completion mode.
     """
     
     # Class-level cache for tokenizers to avoid reloading
@@ -555,32 +535,25 @@ class LiteLLMClient:
         return prompt
 
     def _is_transient_error(self, err: Exception) -> bool:
-        """
-        Check if an error is transient and should be retried.
-        Returns True for 5xx server errors and InternalServerError.
-        """
-        # Check for InternalServerError
-        if InternalServerError and isinstance(err, InternalServerError):
-            return True
-        
-        # Check APIError for status codes indicating transient errors
-        if isinstance(err, APIError):
-            # Check status_code attribute if available
-            status_code = getattr(err, "status_code", None)
-            if status_code and 500 <= status_code < 600:
+        """True for 5xx and similar transient provider errors."""
+        if isinstance(err, ProviderAPIError):
+            code = getattr(err, "status_code", None)
+            if code is not None and 500 <= int(code) < 600:
                 return True
-            
-            # Check error message/response for 5xx indicators
             error_str = str(err).lower()
-            if any(code in error_str for code in ["500", "502", "503", "504", "internal server error"]):
+            if any(
+                x in error_str
+                for x in ["500", "502", "503", "504", "internal server error"]
+            ):
                 return True
-        
-        # Check OpenAIError for 5xx status codes
         if isinstance(err, OpenAIError):
             status_code = getattr(err, "status_code", None)
             if status_code and 500 <= status_code < 600:
                 return True
-        
+        if isinstance(err, AnthropicAPIStatusError):
+            status_code = getattr(err, "status_code", None)
+            if status_code and 500 <= status_code < 600:
+                return True
         return False
 
     def _merge_completion_responses(self, r1: Any, r2: Any) -> Any:
@@ -726,7 +699,7 @@ class LiteLLMClient:
 
        
                     
-                    # Use OpenAI client for completion endpoint (more reliable than litellm routing)
+                    # Use OpenAI client for completion endpoint
                     timeout = profile.get_timeout()
                     openai_client = AsyncOpenAI(
                         api_key=profile.api_key,
@@ -746,9 +719,15 @@ class LiteLLMClient:
                         f"context_window: {max_context_window}"
                     )
                     
-                    # Temporary: Rich pprint for visual debugging
-                    print("Prompt:")
-                    pprint(prompt, indent_guides=True, expand_all=True, console=console)
+                    _pv = 800
+                    if len(prompt) > _pv * 2:
+                        logger.debug(
+                            "Completion prompt preview: head=%s ... tail=%s",
+                            repr(prompt[:_pv]),
+                            repr(prompt[-_pv:]),
+                        )
+                    else:
+                        logger.debug("Completion prompt preview: %s", repr(prompt))
 
                     # Handle vLLM-specific parameters (like top_k) via extra_body
                     # OpenAI SDK doesn't support top_k as a direct parameter, but vLLM accepts it via extra_body
@@ -848,7 +827,7 @@ class LiteLLMClient:
                 else:
                     # Use chat completion
                     # For vLLM provider, use OpenAI SDK directly to preserve thinking tokens
-                    # LiteLLM strips thinking tokens, so we bypass it for vLLM
+                    # Direct OpenAI SDK preserves thinking tokens for vLLM
                     # Log messages for debugging
                     logger.debug(
                         f"Chat completion messages: {len(messages)} messages, "
@@ -891,7 +870,7 @@ class LiteLLMClient:
                             openai_client=openai_client,
                         )
                     else:
-                        # Use LiteLLM for other providers (Gemini, OpenAI, etc.)
+                        # Provider router for Gemini, OpenAI, DeepSeek
                         # Handle tool calling loop automatically
                         response = await self._handle_tool_calling_loop(
                             profile=profile,
@@ -900,7 +879,7 @@ class LiteLLMClient:
                             tools=tools,
                             tool_executor=tool_executor,
                             rate_limiter=rate_limiter,
-                            openai_client=None,  # Use LiteLLM
+                            openai_client=None,  # use provider router
                         )
                     
                 # Extract token stats and record input tokens
@@ -957,7 +936,7 @@ class LiteLLMClient:
                 
                 return response
 
-            except RateLimitError as err:
+            except ProviderRateLimitError as err:
                 # Rate limit hit - wait and retry
                 if attempt < max_retries:
                     # Calculate wait time
@@ -979,7 +958,7 @@ class LiteLLMClient:
                         f"Rate limit exceeded after {max_retries + 1} attempts: {str(err)}"
                     ) from err
 
-            except (APIError, OpenAIError) as err:
+            except (ProviderAPIError, OpenAIError) as err:
                 # Check if this is a rate limit error (429 status code)
                 status_code = getattr(err, "status_code", None)
                 if status_code == 429:
@@ -1030,12 +1009,12 @@ class LiteLLMClient:
                         ) from err
                 else:
                     # Non-transient API error - don't retry
-                    if isinstance(err, APIError):
+                    if isinstance(err, ProviderAPIError):
                         raise APIServerException(str(err)) from err
                     else:
                         raise WorkflowException(str(err)) from err
 
-            except ContentPolicyViolationError as err:
+            except ProviderContentPolicyError as err:
                 raise ContentBlockedException(str(err)) from err
 
             except EmptyResponseException as err:
@@ -1071,11 +1050,14 @@ class LiteLLMClient:
     def _extract_structured_response(self, response: Any) -> Optional[Any]:
         try:
             choice = response.choices[0]
-            message = getattr(choice, "message", {})
+            message = getattr(choice, "message", None)
+            if message is None:
+                return None
             if isinstance(message, dict):
                 return message.get("parsed")
+            return getattr(message, "parsed", None)
         except (IndexError, AttributeError):
-            logger.debug("Structured response not found in LiteLLM payload.")
+            logger.debug("Structured response not found in provider payload.")
         return None
 
     def _extract_tool_calls(self, response: Any, is_completion_mode: bool) -> Optional[List[Any]]:
@@ -1256,15 +1238,12 @@ class LiteLLMClient:
                 extra_body=extra_body_params if extra_body_params else None,
             )
         else:
-            # LiteLLM for other providers
-            response = await acompletion(
-                model=profile.model,
+            response = await route_chat_completion(
+                profile=profile,
                 messages=messages,
-                num_retries=0,  # We handle retries ourselves
-                api_key=profile.api_key,
-                api_base=profile.api_base,
+                api_params=api_params,
+                tools=tools,
                 timeout=timeout,
-                **api_params,
             )
         
         # Record input tokens
@@ -1277,6 +1256,35 @@ class LiteLLMClient:
         
         return response
     
+
+
+    async def generate_image(
+        self,
+        stage_config: StageConfig,
+        prompt: str,
+        generation_overrides: Optional[Dict[str, Any]] = None,
+    ) -> ImageGenerationResult:
+        from .providers.router import route_image_generation
+
+        profile = self._config.resolve_profile(stage_config.model_profile)
+        if profile.task != "image_generation":
+            raise ValueError(
+                f"generate_image requires task=image_generation, got {profile.task!r}"
+            )
+        timeout = profile.get_timeout()
+        params: Dict[str, Any] = {
+            "temperature": profile.temperature,
+            **profile.extra_params,
+        }
+        if generation_overrides:
+            params.update(generation_overrides)
+        return await route_image_generation(
+            profile=profile,
+            prompt=prompt,
+            api_params=params,
+            timeout=timeout,
+        )
+
     def _build_params(
         self,
         profile: ModelProfile,

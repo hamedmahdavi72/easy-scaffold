@@ -20,7 +20,7 @@ Here's what you can configure in your stage YAML files:
 - `output_mapping`: (When using `response_model`) Maps model attributes into the workflow context.
 - `output_key`: (When *not* using `response_model`) Key where the raw string output is stored.
 - `model_profile`: (Optional) Name of the LLM profile defined in `configs/llm/default.yaml` to override the default model.
-- `generation_config`: (Optional) Per-stage LiteLLM overrides (e.g., alternative temperature).
+- `generation_config`: (Optional) Per-stage generation overrides (e.g., alternative temperature).
 - `tools`: (Optional) List of tool references for function calling (e.g., `["math.calculate", "code.execute"]`).
 
 ---
@@ -146,7 +146,7 @@ Override model settings for a specific stage:
   output_key: "generated_text"
 ```
 
-You can override `temperature`, `max_tokens`, or any other LiteLLM parameter.
+You can override `temperature`, `max_tokens`, or other parameters supported by the provider.
 
 #### Tool Calling
 
@@ -211,7 +211,7 @@ When you call a stage, it:
   {
       "outputs": {...},           # data added to context
       "raw_output": <object>,     # Pydantic instance or string
-      "token_stats": {...},       # LiteLLM usage details (if available)
+      "token_stats": {...},       # Token usage details (if available)
       "inputs": {...},            # values used in prompt templates
   }
   ```

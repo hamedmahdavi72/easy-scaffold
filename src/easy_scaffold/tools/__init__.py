@@ -12,15 +12,8 @@ from .manager import ToolRegistry, ToolExecutor, tool, get_registry
 from .sandbox import create_sandbox, Sandbox, SandboxResult
 
 # Import tool modules to register tools
-try:
-    from . import math  # noqa: F401
-except ImportError:
-    pass  # math tools optional
-
-try:
-    from . import code  # noqa: F401
-except ImportError:
-    pass  # code tools optional
+from . import math  # noqa: F401
+from . import code  # noqa: F401
 
 __all__ = [
     "ToolRegistry",

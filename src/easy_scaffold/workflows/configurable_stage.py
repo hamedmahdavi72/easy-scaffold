@@ -1,27 +1,24 @@
 # src/easy_scaffold/workflows/configurable_stage.py
 import json
+import uuid
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, get_args
 from pydantic import BaseModel, ValidationError
-try:  # Optional dependency for rich logging
-    from rich.pretty import pprint  # type: ignore
-    from rich.console import Console  # type: ignore
-    from rich.theme import Theme  # type: ignore
+from rich.pretty import pprint  # type: ignore
+from rich.console import Console  # type: ignore
+from rich.theme import Theme  # type: ignore
 
-    custom = Theme(
-        {
-            "repr.str": "bold yellow",
-            "repr.number": "bright_cyan",
-            "repr.brace": "white",
-            "repr.bool_true": "bold green",
-            "repr.bool_false": "bold red",
-        }
-    )
-    console = Console(theme=custom)
-except ImportError:  # Fallback: basic printers
-    pprint = print  # type: ignore
-    console = None
+custom = Theme(
+    {
+        "repr.str": "bold yellow",
+        "repr.number": "bright_cyan",
+        "repr.brace": "white",
+        "repr.bool_true": "bold green",
+        "repr.bool_false": "bold red",
+    }
+)
+console = Console(theme=custom)
 
 from easy_scaffold.common.custom_exceptions import (
     APIServerException,
@@ -42,15 +39,53 @@ from easy_scaffold.configs.pydantic_models import (
 logger = logging.getLogger(__name__)
 
 
+def _strip_json_fences(raw: str) -> str:
+    s = raw.strip()
+    if s.startswith('`'):
+        lines = s.splitlines()
+        if lines and lines[0].startswith('`'):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == '`':
+            lines = lines[:-1]
+        s = '\n'.join(lines).strip()
+    return s
+
+
+def _assistant_content_to_text(content: Any) -> Optional[str]:
+    if content is None:
+        return None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for b in content:
+            if isinstance(b, dict) and b.get('type') == 'text':
+                parts.append(str(b.get('text') or ''))
+        return ''.join(parts) if parts else None
+    return str(content)
+
+
+def _messages_to_single_prompt_text(messages: List[Dict[str, Any]]) -> str:
+    chunks: List[str] = []
+    for m in messages:
+        if m.get('role') not in ('user', 'system', 'assistant'):
+            continue
+        txt = _assistant_content_to_text(m.get('content'))
+        if txt and txt.strip():
+            chunks.append(txt.strip())
+    return '\n\n'.join(chunks).strip()
+
+
 class ConfigurableStage:
     """A stage configured from a StageConfig object, using the native genai SDK."""
 
-    def __init__(self, config: StageConfig, llm_client: Any, llm_config: Any):
+    def __init__(self, config: StageConfig, llm_client: Any, llm_config: Any, blob_store: Any = None):
         self._config = config
         self._llm_client = llm_client
         self._llm_config = llm_config
+        self._blob_store = blob_store
         self._response_model: Optional[Type[BaseModel]] = None
-        self._base_model_class: Optional[Type[BaseModel]] = None  # Base class for LiteLLM (without List wrapper)
+        self._base_model_class: Optional[Type[BaseModel]] = None  # Base class for structured output (without List wrapper)
         
         if self._config.response_model:
             response_class = import_from_string(self._config.response_model)
@@ -150,7 +185,7 @@ class ConfigurableStage:
         
         Handles:
         - JSON string in message.content (Gemini/OpenAI)
-        - Already parsed output from LiteLLM
+        - Already parsed output from the LLM client
         - Dict or Pydantic instance fallbacks
         
         Returns:
@@ -168,7 +203,7 @@ class ConfigurableStage:
             else:
                 return None
         
-        # Try to get parsed_output first (if LiteLLM already parsed it)
+        # Try to get parsed_output first (if the client already parsed it)
         parsed = getattr(response, "parsed_output", None)
         if parsed is not None:
             # Already a Pydantic instance
@@ -208,11 +243,18 @@ class ConfigurableStage:
             else:
                 content = getattr(message, "content", "")
             
-            if not content or not isinstance(content, str):
+            text_out = None
+            if isinstance(content, str) and content.strip():
+                text_out = content
+            elif isinstance(content, list):
+                text_out = _assistant_content_to_text(content)
+            if not text_out or not str(text_out).strip():
                 return None
-            
-            # Parse JSON string to dict
-            parsed_dict = json.loads(content)
+            text_out = _strip_json_fences(str(text_out))
+            try:
+                parsed_dict = json.loads(text_out)
+            except json.JSONDecodeError:
+                return None
             
             # Convert dict to Pydantic model
             try:
@@ -257,8 +299,64 @@ class ConfigurableStage:
     ) -> Dict[str, Any]:
         
         logger.info(f"--- Running Stage: {self.name} ---")
+        profile = self._llm_config.resolve_profile(self._config.model_profile)
+
+        inputs_for_log = {
+            key: str(get_from_nested_dict(context, path))
+            for key, path in self._config.input_mapping.items()
+        }
+
+        if profile.task == "image_generation":
+            if self._blob_store is None:
+                raise WorkflowException(
+                    "image_generation stages require blob_store in Hydra config."
+                )
+            messages_ig = self._build_messages(context)
+            prompt = _messages_to_single_prompt_text(messages_ig)
+            if not prompt:
+                raise WorkflowException("image_generation requires non-empty text in messages")
+            res = await self._llm_client.generate_image(
+                stage_config=self._config,
+                prompt=prompt,
+                generation_overrides=overrides,
+            )
+            ext = "png" if "png" in (res.mime_type or "").lower() else "jpg"
+            mt = res.mime_type or f"image/{ext}"
+            key = f"generated/{self.name}/{uuid.uuid4().hex}.{ext}"
+            ref = await self._blob_store.put_bytes(key, res.image_bytes, mt)
+            if not self._config.output_key:
+                raise WorkflowException("image_generation stage must set output_key")
+            output_data = {self._config.output_key: ref.model_dump()}
+            context.update(output_data)
+            if console:
+                console.print("--------------------------------")
+                console.print("Output Data:")
+                pprint(output_data, indent_guides=True, expand_all=True, console=console)
+                console.print("--------------------------------")
+            return {
+                "outputs": output_data,
+                "raw_output": ref.model_dump(),
+                "token_stats": None,
+                "inputs": inputs_for_log,
+                "finish_reason": None,
+            }
+
         messages = self._build_messages(context)
-        
+        if self._config.media_attachments:
+            if self._blob_store is None:
+                raise WorkflowException(
+                    f"Stage '{self.name}' has media_attachments but blob_store is not configured."
+                )
+            from easy_scaffold.media.attachments import apply_media_attachments
+
+            messages = await apply_media_attachments(
+                messages,
+                self._config.media_attachments,
+                context,
+                self._blob_store,
+                get_from_nested_dict,
+            )
+
         # Temporary: pprint messages being sent
         if console:
             console.print("=" * 80)
@@ -269,11 +367,6 @@ class ConfigurableStage:
         else:
             logger.info(f"Stage {self.name} messages: {messages}")
         
-        inputs_for_log = {
-            key: str(get_from_nested_dict(context, path))
-            for key, path in self._config.input_mapping.items()
-        }
-
         # Retry configuration for empty structured outputs (from LLMConfig)
         parsing_retry_config = self._llm_config.parsing_retry_config
         max_retries = parsing_retry_config.num_retries
@@ -286,7 +379,7 @@ class ConfigurableStage:
         try:
             # Retry loop for empty structured outputs
             for attempt in range(max_retries + 1):
-                # Pass base model class to LiteLLM (not List wrapper) since LiteLLM doesn't support List types
+                # Pass base model class for structured output (not List wrapper)
                 model_for_llm = self._base_model_class if self._base_model_class else self._response_model
                 response = await self._llm_client.create(
                     stage_config=self._config,
@@ -521,10 +614,11 @@ class ConfigurableStage:
 class StageFactory:
     """Creates and caches configurable stage instances."""
 
-    def __init__(self, stage_configs: List[StageConfig], llm_client: Any, llm_config: Any):
+    def __init__(self, stage_configs: List[StageConfig], llm_client: Any, llm_config: Any, blob_store: Any = None):
         self._stage_configs = {stage.name: stage for stage in stage_configs}
         self._llm_client = llm_client
         self._llm_config = llm_config
+        self._blob_store = blob_store
         self._stages: Dict[str, ConfigurableStage] = {}
 
     def create_stage(self, name: str) -> ConfigurableStage:
@@ -532,7 +626,7 @@ class StageFactory:
             if name not in self._stage_configs:
                 raise ValueError(f"Stage '{name}' not defined in workflow configuration.")
             stage_config = self._stage_configs[name]
-            self._stages[name] = ConfigurableStage(stage_config, self._llm_client, self._llm_config)
+            self._stages[name] = ConfigurableStage(stage_config, self._llm_client, self._llm_config, blob_store=self._blob_store)
         return self._stages[name]
 
 

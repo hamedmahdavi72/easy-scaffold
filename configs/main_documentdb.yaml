@@ -1,0 +1,25 @@
+﻿# configs/main_documentdb.yaml
+defaults:
+  - db: documentdb
+  - llm: default
+  - workflow: imo25_agent
+  - stages: imo25_agent
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+
+app:
+  max_concurrent_tasks: 20
+
+repository:
+  _target_: easy_scaffold.db.mongo_repository.MongoRepository
+  connection_string: ${db.connection_string}
+  default_database: ${db.data_db_name}
+
+  # DocumentDB requires TLS. For local dev you can keep tlsAllowInvalidCertificates=true.
+  # For production, prefer a CA-validated tlsCAFile / correct URI options in DOCUMENTDB_CONNECTION_STRING.
+  tlsAllowInvalidCertificates: true
+  maxPoolSize: 200
+  minPoolSize: 10
+
+logging:
+  level: INFO

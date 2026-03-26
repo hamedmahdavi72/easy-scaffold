@@ -23,6 +23,20 @@ class MessageTemplate(BaseModel):
     template: Optional[str] = None
 
 
+
+
+class MediaAttachment(BaseModel):
+    """Attach an image from context (ImageRef dict) to a message by index."""
+
+    source: str = Field(
+        description="Nested context path to an ImageRef-compatible dict (same as input_mapping paths)"
+    )
+    message_index: int = Field(
+        default=0,
+        ge=0,
+        description="Index into stage.messages / built message list to augment with the image",
+    )
+
 class VerificationOutput(BaseModel):
     verdict: str = Field(
         description="The verdict, typically 'yes' or 'no', indicating if the condition was met."
@@ -173,6 +187,10 @@ class StageConfig(BaseModel):
     generation_config: Dict[str, Any] = Field(default_factory=dict)
     model_profile: Optional[str] = None
     tools: Optional[List[str]] = None  # List of tool references like "math.calculate" or "math"
+    media_attachments: Optional[List[MediaAttachment]] = Field(
+        default=None,
+        description="Resolve ImageRef from context and attach as vision input to a message",
+    )
 
     @model_validator(mode="after")
     def check_exclusive_output_fields(self):
@@ -192,7 +210,11 @@ class StageConfig(BaseModel):
 
 
 class ModelProfile(BaseModel):
-    provider: Literal["gemini", "openai", "deepseek", "vllm"]
+    provider: Literal["gemini", "openai", "deepseek", "vllm", "anthropic"]
+    task: Literal["chat", "image_generation"] = Field(
+        default="chat",
+        description="chat: language model; image_generation: image API (e.g. OpenAI Images)",
+    )
     model: str
     api_key: Optional[str] = None
     api_base: Optional[str] = None
@@ -234,6 +256,25 @@ class ModelProfile(BaseModel):
         
         # Default timeout for most models
         return 600.0  # 10 minutes
+
+    @model_validator(mode="after")
+    def _anthropic_chat_only(self) -> "ModelProfile":
+        if self.provider == "anthropic" and self.completion_mode:
+            raise ValueError(
+                "provider 'anthropic' does not support completion_mode; use chat completion only."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _image_generation_constraints(self) -> "ModelProfile":
+        if self.task == "image_generation":
+            if self.provider != "openai":
+                raise ValueError(
+                    "task 'image_generation' is only supported for provider 'openai' in this release."
+                )
+            if self.completion_mode:
+                raise ValueError("task 'image_generation' cannot be used with completion_mode.")
+        return self
 
 
 class RetrySettings(BaseModel):

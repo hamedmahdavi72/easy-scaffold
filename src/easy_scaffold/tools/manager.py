@@ -146,7 +146,7 @@ class ToolExecutor:
         Returns:
             Tool response in OpenAI format
         """
-        # Extract tool call info (handle both LiteLLM and OpenAI SDK formats)
+        # Extract tool call info (handle both dict and OpenAI SDK formats)
         if hasattr(tool_call, 'function'):
             function_name = tool_call.function.name
             arguments_str = tool_call.function.arguments
